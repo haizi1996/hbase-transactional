@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <annotationProcessing>
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="hbase-transactional-client" />
+        <module name="hbase-transactional-coprocessor" />
+      </profile>
+    </annotationProcessing>
+  </component>
+  <component name="JavacSettings">
+    <option name="ADDITIONAL_OPTIONS_STRING" value="VM options: -Xms128m -Xmx512m -XX:MaxPermSize=256m -XX:MaxDirectMemorySize=64m -Duser.language=zh -Duser.country=CN -Duser.timezone=UTC" />
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="hbase-transactional" options="" />
+      <module name="hbase-transactional-client" options="" />
+      <module name="hbase-transactional-coprocessor" options="" />
+    </option>
+  </component>
+</project>
