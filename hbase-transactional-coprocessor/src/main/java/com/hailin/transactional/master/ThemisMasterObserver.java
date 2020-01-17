@@ -1,28 +1,42 @@
 package com.hailin.transactional.master;
 
+import com.google.common.collect.Lists;
+import com.hailin.transactional.columns.Column;
+import com.hailin.transactional.columns.ColumnCoordinate;
 import com.hailin.transactional.columns.ColumnUtil;
 import com.hailin.transactional.columns.TransactionTTL;
+import com.hailin.transactional.cp.ServerLockCleaner;
+import com.hailin.transactional.lock.ThemisLock;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableBuilder;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.coprocessor.MasterCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.MasterObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.master.HMaster;
-import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.zookeeper.ZKWatcher;
+import org.apache.hadoop.mapreduce.Cluster;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,14 +63,15 @@ public class ThemisMasterObserver implements MasterObserver , Coprocessor {
 
     protected String themisExpiredTsZNodePath;
 
+    protected ServerLockCleaner lockCleaner;
+
     public void start(CoprocessorEnvironment env) throws IOException {
         ColumnUtil.init(env.getConfiguration());
 
         if(env.getConfiguration().getBoolean(THEMIS_EXPIRED_DATA_CLEAN_ENABLE_KEY , true)){
             TransactionTTL.init(env.getConfiguration());
 //            ThemisCpStatistics.init(env.getConfiguration());
-            env.getInstance()
-            startExpiredTimestampCalculator((MasterCoprocessorHost.MasterEnvironmentForCoreCoprocessors) env);
+//            startExpiredTimestampCalculator((MasterCoprocessorHost.MasterEnvironmentForCoreCoprocessors) env);
         }
     }
 
@@ -133,7 +148,7 @@ public class ThemisMasterObserver implements MasterObserver , Coprocessor {
         return builder.build();
     }
 
-    private boolean isThemisEnableFamily(ColumnFamilyDescriptor columnFamilyDescriptor) {
+    public static boolean isThemisEnableFamily(ColumnFamilyDescriptor columnFamilyDescriptor) {
         Bytes value = columnFamilyDescriptor.getValue(new Bytes(THEMIS_ENABLE_KEY.getBytes()));
         return  Boolean.parseBoolean(value.toString());
     }
@@ -151,5 +166,74 @@ public class ThemisMasterObserver implements MasterObserver , Coprocessor {
 
     private void setReturnedThemisTableDesc(TableDescriptor tableDescriptor) {
         ((TableDescriptorBuilder.ModifyableTableDescriptor)tableDescriptor).setValue(RETURNED_THEMIS_TABLE_DESC, "true");
+    }
+
+    /**
+     * 请求时间戳之前的锁
+     * @param ts 指定时间戳
+     * @throws IOException
+     */
+    public void cleanLockBeforeTimestamp(long ts) throws IOException{
+
+        List<TableName> tableNames = getThemisTables(connection);
+        for (TableName tableName : tableNames){
+            LOGGER.error("start to clean expired lock for themis table : " + tableName);
+            int cleanedLockCount = 0;
+            Table table = connection.getTable(tableName);
+            Scan scan = new Scan();
+            scan.addFamily(ColumnUtil.LOCK_FAMILY_NAME);
+            scan.setTimeRange(0, ts);
+            ResultScanner scanner = table.getScanner(scan);
+            Result result = null;
+            while ((result = scanner.next()) != null) {
+                for (Cell cell : result.listCells()) {
+                    ThemisLock lock = ThemisLock.parseFromByte(cell.getValueArray());
+                    Column dataColumn = ColumnUtil.getDataColumnFromConstructedQualifier(new Column(cell.getFamilyArray(),
+                            cell.getQualifierArray()));
+                    lock.setColumnCoordinate(new ColumnCoordinate(tableName.toBytes(), cell.getRowArray(),
+                            dataColumn.getFamily(), dataColumn.getQualifier()));
+                    lockCleaner.cleanLock(lock);
+                    ++cleanedLockCount;
+                    LOGGER.info("themis clean expired lock, lockTs=" + cell.getTimestamp() + ", expiredTs=" + ts
+                            + ", lock=" + ThemisLock.parseFromByte(cell.getValueArray()));
+                }
+            }
+            scanner.close();
+            LOGGER.info("finish clean expired lock for themis table:" + tableName + ", cleanedLockCount="
+                    + cleanedLockCount);
+        }
+
+    }
+
+    public static List<TableName> getThemisTables(Connection connection) throws IOException{
+        List<TableName> tableNames = Lists.newArrayList();
+        Admin admin = null;
+        try {
+            admin = connection.getAdmin();
+            List<TableDescriptor> tableDescriptors = admin.listTableDescriptors();
+
+            for (TableDescriptor tableDescriptor : tableDescriptors) {
+                if(isThemisEnableTable(tableDescriptor)){
+                    tableNames.add(tableDescriptor.getTableName());
+                }
+            }
+        }catch (IOException e){
+            LOGGER.error("get table names fail", e);
+            throw e;
+        } finally {
+            if (admin != null) {
+                admin.close();
+            }
+        }
+        return tableNames;
+    }
+
+    public static boolean isThemisEnableTable(TableDescriptor tableDescriptor) {
+        for (ColumnFamilyDescriptor columnDesc : tableDescriptor.getColumnFamilies()) {
+            if (isThemisEnableFamily(columnDesc)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
