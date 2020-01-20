@@ -9,9 +9,11 @@ import org.apache.hadoop.hbase.KeyValue.Type;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.Writable;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
 
 @Getter
@@ -41,6 +43,14 @@ public abstract class ThemisLock implements Writable {
             lock.readFields(in);
         }
         return lock;
+    }
+
+    public static byte[] toByte(ThemisLock lock) throws IOException {
+        ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
+        DataOutputStream os = new DataOutputStream(byteOut);
+        os.writeBoolean(lock.isPrimary());
+        lock.write(os);
+        return byteOut.toByteArray();
     }
 
     private void readFields(DataInputStream in) throws IOException {

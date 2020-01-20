@@ -20,6 +20,31 @@ public class TransactionTTL {
     public static TimestampType timestampType = TimestampType.CHRONOS;
     public static boolean transactionTTLEnable;
 
+    public static long getExpiredTimestampForWrite(long currentTimeMillis) {
+
+        if (timestampType == TimestampType.CHRONOS){
+            return getExpiredChronosForWrite(currentTimeMillis);
+        }else if (timestampType == TimestampType.MS){
+            return getExpiredMsForWrite(currentTimeMillis);
+        }
+        return Long.MAX_VALUE;
+    }
+
+    private static long getExpiredMsForWrite(long currentTimeMillis) {
+        return currentTimeMillis - writeTransactionTTL - transactionTTLTimeError;
+    }
+
+    private static long getExpiredChronosForWrite(long currentTimeMillis) {
+        return toChronsTs(getExpiredMsForWrite(currentTimeMillis));
+    }
+
+    public static long toMs(long themisTs) {
+        return themisTs >> 18;
+    }
+
+    public static long toChronsTs(long ms) {
+        return ms << 18;
+    }
     // 时间戳类型
     public static enum TimestampType {
         CHRONOS,
